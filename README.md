@@ -61,9 +61,19 @@ Recovers a single timed-out transaction by querying its payment processor.
 | State | Action |
 |---|---|
 | approved | `fulfill_order` |
-| declined | `notify_customer_payment_failed` |
-| pending | `wait_and_retry` |
-| unknown | `manual_review_required` |
+| declined | `refund_customer` |
+| pending | `wait_for_settlement` |
+| unknown | `escalate_to_manual_review` |
+
+**Stale transactions** (> 30 days old) always return `escalate_to_manual_review` with a `stale_transaction_warning` message, regardless of what the processor reports.
+
+**Retry schedule** (`next_retry_at` field, set for pending/unknown):
+| Processor | Next retry |
+|---|---|
+| BancoSur | +5 minutes |
+| MexPay | +1 hour |
+| AndesPSP | +24 hours |
+| CashVoucher | +24 hours |
 
 ### GET `/api/v1/transactions/{transaction_id}/duplicates`
 
@@ -86,12 +96,13 @@ Finds duplicate transactions using:
 ```json
 {
   "transaction_id": "txn_abc123",
-  "duplicates_found": 2,
+  "duplicates_found": 1,
   "duplicates": [
     {
       "duplicate_transaction_id": "txn_def456",
-      "confidence_score": 95,
-      "time_gap_seconds": 45,
+      "confidence_score": 90,
+      "duplicate_type": "accidental_retry",
+      "time_gap_seconds": 38,
       "recommendation": "refund_duplicate",
       "reasoning": "Both approved. Keep txn_abc123 (earlier). Refund txn_def456."
     }
@@ -149,24 +160,108 @@ The seed script generates 150+ transactions:
 - **15–20 duplicate clusters**: accidental retries and legitimate same-price pairs
 - **Edge cases**: stale transactions (>30 days), USD currency mismatches, null customer IDs
 
-## Demo Walkthrough
+## Demo: 3 API Calls
+
+### 1. Single Transaction Recovery
 
 ```bash
-# Get a transaction ID from the database
-sqlite3 vidarx.db "SELECT id FROM transactions LIMIT 5;"
-
-# Recover a single transaction
-curl -X POST http://localhost:8000/api/v1/transactions/txn_XXXXXXXX/recover
-
-# Check for duplicates
-curl http://localhost:8000/api/v1/transactions/txn_XXXXXXXX/duplicates
-
-# Bulk recover all unknown transactions
-sqlite3 vidarx.db "SELECT json_group_array(id) FROM transactions WHERE status='unknown';" | \
-  xargs -I{} curl -X POST http://localhost:8000/api/v1/transactions/bulk-recover \
-    -H "Content-Type: application/json" \
-    -d '{"transaction_ids": {}}'
+curl -X POST http://localhost:8000/api/v1/transactions/txn_demo_a1/recover
 ```
+
+```json
+{
+    "transaction_id": "txn_demo_a1",
+    "original_status": "unknown",
+    "recovered_state": "approved",
+    "processor_timestamp": "2026-02-24T22:12:50.938516+00:00",
+    "recommended_action": "fulfill_order",
+    "next_retry_at": null,
+    "stale_transaction_warning": null,
+    "processor_raw_response": {
+        "transaction_id": "txn_demo_a1",
+        "status": "APPROVED",
+        "timestamp": "2026-02-24T22:12:50.938516+00:00",
+        "processor": "BancoSur",
+        "authorization_code": "BS961945",
+        "response_code": "00"
+    },
+    "recovered_at": "2026-02-24T22:12:50.938560+00:00"
+}
+```
+
+The BancoSur raw response (`status: "APPROVED"`) is normalized to `recovered_state: "approved"` and mapped to `recommended_action: "fulfill_order"`. The finance team can now ship the order.
+
+---
+
+### 2. Duplicate Detection in Action
+
+Two transactions from the same customer, same amount (MXN 3,200), 38 seconds apart — a classic panic retry.
+
+```bash
+# First recover both transactions, then check for duplicates
+curl -X POST http://localhost:8000/api/v1/transactions/txn_demo_b1/recover
+curl -X POST http://localhost:8000/api/v1/transactions/txn_demo_b2/recover
+curl http://localhost:8000/api/v1/transactions/txn_demo_b1/duplicates
+```
+
+```json
+{
+    "transaction_id": "txn_demo_b1",
+    "duplicates_found": 1,
+    "duplicates": [
+        {
+            "duplicate_transaction_id": "txn_demo_b2",
+            "confidence_score": 90,
+            "duplicate_type": "accidental_retry",
+            "time_gap_seconds": 38.0,
+            "recommendation": "refund_duplicate",
+            "reasoning": "Both approved. Keep txn_demo_b1 (earlier). Refund txn_demo_b2."
+        }
+    ]
+}
+```
+
+Confidence score 90/100: exact amount (+40) + same processor (+20) + gap under 2 min (+30). Classified as `accidental_retry`. Recommendation: keep the first charge, refund the second.
+
+---
+
+### 3. Bulk Recovery — Summary Report (173 transactions)
+
+```bash
+curl -X POST http://localhost:8000/api/v1/transactions/bulk-recover \
+  -H "Content-Type: application/json" \
+  -d '{"transaction_ids": ["txn_1", "txn_2", ..., "txn_173"]}'
+```
+
+```json
+{
+    "total_processed": 173,
+    "results": {
+        "approved": 113,
+        "declined": 31,
+        "pending": 10,
+        "still_unknown": 18,
+        "errors": 1
+    },
+    "duplicates_detected": 30,
+    "total_recommended_refund_amount": 148953.14,
+    "refund_currency_breakdown": {
+        "MXN": 39170.95,
+        "CLP": 44708.59,
+        "COP": 65073.60
+    },
+    "failed_transactions": [
+        {
+            "transaction_id": "txn_29265486",
+            "error": "AndesPSP: error de conexión"
+        }
+    ],
+    "processing_time_ms": 278,
+    "transactions": ["... 172 individual results ..."]
+}
+```
+
+173 transactions processed concurrently in **278ms**. 1 processor error isolated without aborting the batch. 30 duplicate pairs detected across the dataset with MXN 148,953 in recommended refunds broken down by currency.
 
 ## Project Structure
 
