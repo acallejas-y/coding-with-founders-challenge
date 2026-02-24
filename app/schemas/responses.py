@@ -10,6 +10,7 @@ class RecoverResponse(BaseModel):
     processor_timestamp: Optional[str]
     recommended_action: str
     next_retry_at: Optional[datetime] = None  # Stretch Goal A: retry schedule for pending/unknown
+    stale_transaction_warning: Optional[str] = None  # Set when transaction is older than 30 days
     processor_raw_response: Dict[str, Any]
     recovered_at: datetime
 
@@ -20,6 +21,7 @@ class RecoverResponse(BaseModel):
 class DuplicateEntry(BaseModel):
     duplicate_transaction_id: str
     confidence_score: int
+    duplicate_type: str  # "accidental_retry" | "suspected_retry" | "likely_legitimate"
     time_gap_seconds: float
     recommendation: str
     reasoning: str
@@ -39,6 +41,11 @@ class BulkResultCounts(BaseModel):
     errors: int = 0
 
 
+class FailedTransaction(BaseModel):
+    transaction_id: str
+    error: str
+
+
 class BulkSummary(BaseModel):
     total_processed: int
     results: BulkResultCounts
@@ -46,6 +53,7 @@ class BulkSummary(BaseModel):
     total_recommended_refund_amount: float
     refund_currency_breakdown: Dict[str, float]
     transactions: List[RecoverResponse]
+    failed_transactions: List[FailedTransaction] = []
     processing_time_ms: int
 
 

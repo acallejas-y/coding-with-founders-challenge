@@ -12,6 +12,11 @@ Confidence scoring (0-100):
   Same processor: +20
   Time gap:       +30 (<2min), +20 (<5min), +10 (otherwise)
 
+Duplicate type classification:
+  score >= 80 AND gap < 120s AND same processor → "accidental_retry"
+  score >= 60 AND gap < 300s                    → "suspected_retry"
+  otherwise                                      → "likely_legitimate"
+
 Recommendation logic:
   Both approved          → keep first (earlier), refund_duplicate for later
   One approved + unknown → first is ground truth, mark unknown as duplicate
@@ -55,6 +60,24 @@ def _confidence_score(
         score += 10
 
     return min(score, 100)
+
+
+def _duplicate_type(score: int, gap_seconds: float, same_processor: bool) -> str:
+    """
+    Classify the duplicate relationship.
+
+    accidental_retry   — high confidence, very close together, same processor
+                         (customer clicked twice or network retry)
+    suspected_retry    — moderate confidence, close together
+                         (likely a retry but less certain)
+    likely_legitimate  — lower confidence or wide time gap
+                         (may be two genuine orders at the same price)
+    """
+    if score >= 80 and gap_seconds < 120 and same_processor:
+        return "accidental_retry"
+    if score >= 60 and gap_seconds < 300:
+        return "suspected_retry"
+    return "likely_legitimate"
 
 
 def _recommendation(
@@ -147,6 +170,8 @@ def find_duplicates(transaction_id: str, db: Session) -> List[DuplicateEntry]:
         gap_seconds = abs(
             (target.created_at - candidate.created_at).total_seconds()
         )
+        same_processor = target.processor == candidate.processor
+        dup_type = _duplicate_type(score, gap_seconds, same_processor)
 
         # Use recovered_state if available, else real_state as proxy for detection
         target_state = target.recovered_state or target.real_state
@@ -159,6 +184,7 @@ def find_duplicates(transaction_id: str, db: Session) -> List[DuplicateEntry]:
         results.append(DuplicateEntry(
             duplicate_transaction_id=candidate.id,
             confidence_score=score,
+            duplicate_type=dup_type,
             time_gap_seconds=gap_seconds,
             recommendation=recommendation,
             reasoning=reasoning,

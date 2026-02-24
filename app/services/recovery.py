@@ -29,6 +29,9 @@ PROCESSOR_MAP = {
 }
 
 
+STALE_THRESHOLD_DAYS = 30
+
+
 class RecoveryResult:
     def __init__(
         self,
@@ -40,6 +43,7 @@ class RecoveryResult:
         processor_raw_response: Dict[str, Any],
         recovered_at: datetime,
         next_retry_at=None,
+        stale_transaction_warning: str = None,
     ):
         self.transaction_id = transaction_id
         self.original_status = original_status
@@ -49,6 +53,7 @@ class RecoveryResult:
         self.processor_raw_response = processor_raw_response
         self.recovered_at = recovered_at
         self.next_retry_at = next_retry_at
+        self.stale_transaction_warning = stale_transaction_warning
 
 
 async def recover_transaction(transaction_id: str, db: Session) -> RecoveryResult:
@@ -82,6 +87,17 @@ async def recover_transaction(transaction_id: str, db: Session) -> RecoveryResul
     if processor is None:
         raise ValueError(f"Unknown processor: {txn.processor}")
 
+    # Detect stale transactions (> 30 days old)
+    now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+    age_days = (now_naive - txn.created_at).days
+    stale_warning = None
+    if age_days > STALE_THRESHOLD_DAYS:
+        stale_warning = (
+            f"Transaction is {age_days} days old (threshold: {STALE_THRESHOLD_DAYS} days). "
+            "Processor response may not reflect the original payment state. "
+            "Manual verification with the processor is strongly recommended."
+        )
+
     # Query processor (may raise RuntimeError on 503)
     raw_response = await processor.query_transaction(txn.id, txn.real_state)
 
@@ -89,8 +105,14 @@ async def recover_transaction(transaction_id: str, db: Session) -> RecoveryResul
     normalized = normalize(txn.processor, raw_response)
 
     recovered_at = datetime.now(timezone.utc)
-    recommended_action = get_recommended_action(normalized.normalized_state)
-    next_retry_at = get_next_retry_at(txn.processor, normalized.normalized_state)
+
+    # Stale transactions always escalate to manual review regardless of processor response
+    if stale_warning:
+        recommended_action = "escalate_to_manual_review"
+        next_retry_at = None
+    else:
+        recommended_action = get_recommended_action(normalized.normalized_state)
+        next_retry_at = get_next_retry_at(txn.processor, normalized.normalized_state)
 
     # Persist recovery result
     txn.recovered_state = normalized.normalized_state
@@ -109,4 +131,5 @@ async def recover_transaction(transaction_id: str, db: Session) -> RecoveryResul
         processor_raw_response=raw_response,
         recovered_at=recovered_at,
         next_retry_at=next_retry_at,
+        stale_transaction_warning=stale_warning,
     )

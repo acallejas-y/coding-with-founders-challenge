@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.schemas.requests import BulkRecoverRequest
-from app.schemas.responses import BulkSummary, BulkResultCounts, RecoverResponse
+from app.schemas.responses import BulkSummary, BulkResultCounts, RecoverResponse, FailedTransaction
 from app.services.recovery import recover_transaction
 from app.services.duplicate import find_duplicates
 from app import models
@@ -41,6 +41,7 @@ async def bulk_recover(request: BulkRecoverRequest, db: Session = Depends(get_db
 
     counts = BulkResultCounts()
     transaction_responses = []
+    failed_transactions = []
     total_refund = 0.0
     refund_breakdown: dict = {}
     duplicates_detected = 0
@@ -48,6 +49,10 @@ async def bulk_recover(request: BulkRecoverRequest, db: Session = Depends(get_db
     for txn_id, (result, error) in zip(request.transaction_ids, outcomes):
         if error:
             counts.errors += 1
+            failed_transactions.append(FailedTransaction(
+                transaction_id=txn_id,
+                error=error,
+            ))
             continue
 
         # Tally state counts
@@ -69,6 +74,7 @@ async def bulk_recover(request: BulkRecoverRequest, db: Session = Depends(get_db
             processor_timestamp=result.processor_timestamp,
             recommended_action=result.recommended_action,
             next_retry_at=result.next_retry_at,
+            stale_transaction_warning=result.stale_transaction_warning,
             processor_raw_response=result.processor_raw_response,
             recovered_at=result.recovered_at,
         ))
@@ -102,5 +108,6 @@ async def bulk_recover(request: BulkRecoverRequest, db: Session = Depends(get_db
         total_recommended_refund_amount=round(total_refund, 2),
         refund_currency_breakdown=refund_breakdown,
         transactions=transaction_responses,
+        failed_transactions=failed_transactions,
         processing_time_ms=elapsed_ms,
     )

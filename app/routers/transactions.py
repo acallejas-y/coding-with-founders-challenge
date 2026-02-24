@@ -33,6 +33,7 @@ async def recover(transaction_id: str, db: Session = Depends(get_db)):
         processor_timestamp=result.processor_timestamp,
         recommended_action=result.recommended_action,
         next_retry_at=result.next_retry_at,
+        stale_transaction_warning=result.stale_transaction_warning,
         processor_raw_response=result.processor_raw_response,
         recovered_at=result.recovered_at,
     )
