@@ -71,14 +71,14 @@ async def recover_transaction(transaction_id: str, db: Session) -> RecoveryResul
     if txn is None:
         raise ValueError(f"Transaction {transaction_id} not found")
 
-    if txn.status != "unknown":
-        # Already recovered — return cached result
+    if txn.recovered_state is not None:
+        # Already recovered — return cached result without re-querying the processor
         return RecoveryResult(
             transaction_id=txn.id,
             original_status=txn.status,
-            recovered_state=txn.recovered_state or txn.status,
+            recovered_state=txn.recovered_state,
             processor_timestamp=txn.processor_timestamp,
-            recommended_action=get_recommended_action(txn.recovered_state or txn.status),
+            recommended_action=get_recommended_action(txn.recovered_state),
             processor_raw_response={"cached": True, "status": txn.recovered_state},
             recovered_at=txn.recovered_at or txn.created_at,
         )

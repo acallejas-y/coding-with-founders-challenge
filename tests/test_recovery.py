@@ -218,11 +218,10 @@ class TestRecoveryErrors:
 # ---------------------------------------------------------------------------
 class TestIdempotency:
     async def test_already_recovered_returns_cached_without_calling_processor(self, db):
-        """If status != 'unknown', the processor must NOT be called."""
-        txn = make_txn(db, "txn_1", processor="bancosur", recovered_state="approved")
-        # Manually flip status to non-unknown to simulate already-recovered
-        txn.status = "processed"
-        db.commit()
+        """If recovered_state is already set, the processor must NOT be called again."""
+        # recovered_state="approved" simulates a transaction already recovered in a prior call.
+        # status stays "unknown" (audit trail) — idempotency is keyed on recovered_state.
+        make_txn(db, "txn_1", processor="bancosur", recovered_state="approved")
 
         spy = AsyncMock()
         spy.query_transaction = AsyncMock(return_value=BANCOSUR_APPROVED)
