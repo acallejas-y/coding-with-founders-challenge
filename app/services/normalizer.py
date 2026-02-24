@@ -133,11 +133,32 @@ def normalize(processor_name: str, raw_response: Dict[str, Any]) -> NormalizedRe
 
 RECOMMENDED_ACTIONS = {
     "approved": "fulfill_order",
-    "declined": "notify_customer_payment_failed",
-    "pending": "wait_and_retry",
-    "unknown": "manual_review_required",
+    "declined": "refund_customer",
+    "pending": "wait_for_settlement",
+    "unknown": "escalate_to_manual_review",
 }
 
 
 def get_recommended_action(normalized_state: str) -> str:
-    return RECOMMENDED_ACTIONS.get(normalized_state, "manual_review_required")
+    return RECOMMENDED_ACTIONS.get(normalized_state, "escalate_to_manual_review")
+
+
+# Stretch Goal A: retry schedule per processor type (for pending/unknown states)
+RETRY_DELAY_SECONDS = {
+    "bancosur": 5 * 60,       # +5 minutes
+    "mexpay": 60 * 60,         # +1 hour
+    "andespsp": 24 * 60 * 60,  # +24 hours
+    "cashvoucher": 24 * 60 * 60,  # +24 hours
+}
+
+
+def get_next_retry_at(processor_name: str, normalized_state: str):
+    """
+    Returns next retry datetime for pending or unknown transactions.
+    Returns None for resolved states (approved/declined).
+    """
+    if normalized_state not in ("pending", "unknown"):
+        return None
+    delay = RETRY_DELAY_SECONDS.get(processor_name, 60 * 60)
+    from datetime import datetime, timezone, timedelta
+    return datetime.now(timezone.utc) + timedelta(seconds=delay)

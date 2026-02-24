@@ -9,6 +9,7 @@ class RecoverResponse(BaseModel):
     recovered_state: str
     processor_timestamp: Optional[str]
     recommended_action: str
+    next_retry_at: Optional[datetime] = None  # Stretch Goal A: retry schedule for pending/unknown
     processor_raw_response: Dict[str, Any]
     recovered_at: datetime
 

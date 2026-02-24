@@ -125,3 +125,30 @@ CREATE TABLE transactions (
 | Processor 503 error | 502 | Surfaces processor error message |
 | Bulk: individual error | 200 | Counted in `errors`, batch continues |
 | No customer_id | 200 | Returns empty duplicates list |
+
+## Handling Processor Timeouts
+
+The original problem is that processors didn't respond within VidaRx's 10-second threshold, leaving transactions in `status="unknown"`. This API solves the _post-hoc_ recovery problem: after a timeout has already occurred, query the processor to find out what actually happened.
+
+**How we handle timeouts in the recovery mocks:**
+- Each processor mock simulates realistic latency (10–200ms) using `asyncio.sleep()`
+- Mocks have a ~5% random error rate (503 responses) to simulate real-world processor unreliability
+- The single recovery endpoint propagates processor errors as HTTP 502 (Bad Gateway) so the caller knows the processor was unreachable — not that the transaction was declined
+- The bulk endpoint isolates these errors per transaction: a 503 from one processor does not block the other 499 recoveries
+- For `pending` and `unknown` outcomes, the response includes `next_retry_at` — a calculated timestamp for when to attempt recovery again based on processor type (BancoSur: +5 min, MexPay: +1 hour, AndesPSP/CashVoucher: +24 hours)
+
+**Why not just retry immediately?** Each processor has different settlement windows. BancoSur resolves quickly; AndesPSP processes cash vouchers in batches overnight. Retrying a cash voucher every 5 minutes wastes requests and stays within processor rate limits.
+
+## Improvements With More Time
+
+1. **Persistent retry queue**: Instead of returning `next_retry_at` in the response and relying on the caller to re-invoke, a background worker (Celery + Redis or APScheduler) would automatically re-attempt recovery at the scheduled time and notify VidaRx's finance system when a transaction resolves.
+
+2. **Webhook callbacks**: Rather than polling, integrate processor webhooks so recoveries happen in real time. The mock framework already has the normalizer pattern in place — adding a `POST /webhook/{processor}` endpoint would take 1–2 hours.
+
+3. **Confidence scoring for duplicate detection using payment method**: The current scoring uses amount, processor, and time gap. Adding payment method (card BIN, wallet ID) as a fourth factor (+15 pts) would reduce false positives where two different customers happen to use the same processor for the same amount within 10 minutes.
+
+4. **Audit log table**: Currently `recovered_state` overwrites in place. A separate `recovery_attempts` table would track every query attempt (timestamp, raw response, outcome), which is required for PCI-DSS compliance in a production pharmacy system.
+
+5. **Rate limiting per processor**: BancoSur and MexPay have rate limits. A token bucket per processor instance would prevent bulk recovery jobs from triggering 429s and getting the VidaRx IP blocked.
+
+6. **Database upgrade**: SQLite works for this demo but would not handle concurrent writes from multiple API workers. PostgreSQL with `SELECT ... FOR UPDATE SKIP LOCKED` would enable safe concurrent recovery without race conditions on the same transaction ID.

@@ -18,7 +18,7 @@ from app.processors.bancosur import BancoSurProcessor
 from app.processors.mexpay import MexPayProcessor
 from app.processors.andespsp import AndesPSPProcessor
 from app.processors.cashvoucher import CashVoucherProcessor
-from app.services.normalizer import normalize, get_recommended_action
+from app.services.normalizer import normalize, get_recommended_action, get_next_retry_at
 
 
 PROCESSOR_MAP = {
@@ -39,6 +39,7 @@ class RecoveryResult:
         recommended_action: str,
         processor_raw_response: Dict[str, Any],
         recovered_at: datetime,
+        next_retry_at=None,
     ):
         self.transaction_id = transaction_id
         self.original_status = original_status
@@ -47,6 +48,7 @@ class RecoveryResult:
         self.recommended_action = recommended_action
         self.processor_raw_response = processor_raw_response
         self.recovered_at = recovered_at
+        self.next_retry_at = next_retry_at
 
 
 async def recover_transaction(transaction_id: str, db: Session) -> RecoveryResult:
@@ -88,6 +90,7 @@ async def recover_transaction(transaction_id: str, db: Session) -> RecoveryResul
 
     recovered_at = datetime.now(timezone.utc)
     recommended_action = get_recommended_action(normalized.normalized_state)
+    next_retry_at = get_next_retry_at(txn.processor, normalized.normalized_state)
 
     # Persist recovery result
     txn.recovered_state = normalized.normalized_state
@@ -105,4 +108,5 @@ async def recover_transaction(transaction_id: str, db: Session) -> RecoveryResul
         recommended_action=recommended_action,
         processor_raw_response=raw_response,
         recovered_at=recovered_at,
+        next_retry_at=next_retry_at,
     )
