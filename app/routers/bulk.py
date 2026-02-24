@@ -1,7 +1,10 @@
 import asyncio
+import logging
 import time
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.database import get_db
 from app.schemas.requests import BulkRecoverRequest
@@ -45,6 +48,7 @@ async def bulk_recover(request: BulkRecoverRequest, db: Session = Depends(get_db
     total_refund = 0.0
     refund_breakdown: dict = {}
     duplicates_detected = 0
+    seen_duplicate_pairs: set = set()  # frozensets of (txn_id, dup_id) to avoid double-counting
 
     for txn_id, (result, error) in zip(request.transaction_ids, outcomes):
         if error:
@@ -82,22 +86,26 @@ async def bulk_recover(request: BulkRecoverRequest, db: Session = Depends(get_db
         # Duplicate detection + refund tallying
         try:
             dups = find_duplicates(result.transaction_id, db)
-            if dups:
-                duplicates_detected += len(dups)
-                # Tally refund amounts for refund_duplicate recommendations
-                txn = db.query(models.Transaction).filter(
-                    models.Transaction.id == result.transaction_id
-                ).first()
-                if txn:
-                    for dup in dups:
-                        if dup.recommendation == "refund_duplicate":
-                            total_refund += txn.amount
-                            currency = txn.currency
-                            refund_breakdown[currency] = (
-                                refund_breakdown.get(currency, 0.0) + txn.amount
-                            )
-        except Exception:
-            pass
+            txn = None
+            for dup in dups:
+                pair = frozenset([result.transaction_id, dup.duplicate_transaction_id])
+                if pair in seen_duplicate_pairs:
+                    continue  # already counted from the other side of this pair
+                seen_duplicate_pairs.add(pair)
+                duplicates_detected += 1
+
+                if dup.recommendation == "refund_duplicate":
+                    if txn is None:
+                        txn = db.query(models.Transaction).filter(
+                            models.Transaction.id == result.transaction_id
+                        ).first()
+                    if txn:
+                        total_refund += txn.amount
+                        refund_breakdown[txn.currency] = (
+                            refund_breakdown.get(txn.currency, 0.0) + txn.amount
+                        )
+        except Exception as e:
+            logger.warning("Duplicate detection failed for %s: %s", result.transaction_id, e)
 
     elapsed_ms = int(time.time() * 1000 - start_ms)
 

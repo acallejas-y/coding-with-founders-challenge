@@ -204,7 +204,7 @@ class TestBulkRecoverEndpoint:
         assert body["results"]["pending"] == 1
 
     def test_bulk_recover_detects_duplicates_and_tallies_refund(self, client, db):
-        """Duplicate cluster: two approved txns -> refund amount tallied."""
+        """Duplicate cluster: two approved txns → exactly 1 pair detected, refund tallied once."""
         make_txn(db, "txn_a", customer_id="cust_dup", amount=500.0,
                  created_at=BASE_TIME, processor="bancosur",
                  recovered_state="approved")
@@ -218,8 +218,9 @@ class TestBulkRecoverEndpoint:
                                json={"transaction_ids": ["txn_a", "txn_b"]})
 
         body = resp.json()
-        assert body["duplicates_detected"] > 0
-        assert body["total_recommended_refund_amount"] > 0
+        # Each pair counted once (not twice — one per side)
+        assert body["duplicates_detected"] == 1
+        assert body["total_recommended_refund_amount"] == 500.0
 
 
 # ---------------------------------------------------------------------------
